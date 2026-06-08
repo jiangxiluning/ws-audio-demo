@@ -6,7 +6,7 @@
 
 ## 1. 系统概述
 
-用户上传 WAV（10s–300s），浏览器侧转 FLAC 并上传；Spring 编排层按块解码、调用 Python 做 PCM 处理、编码为 OGG-FLAC 段并通过 WebSocket 流式推送；全部块完成后合并为完整 OGG 供下载。浏览器可边收边播，下载进度 100% 后可任意 seek 与保存。
+用户上传 WAV（10s–300s），浏览器侧转 FLAC 并上传；Spring 编排层按块（≤90s）解码、通过 **gRPC Server Streaming** 调用 Python 做 PCM 处理（每 **10s** 一帧返回）、逐 segment 编码为 OGG-FLAC 并通过 WebSocket 推送；全部块完成后合并为完整 OGG 供下载。浏览器在收到 `segment_complete` 时解码并边播，下载进度 100% 后可任意 seek 与保存。
 
 ---
 
@@ -393,11 +393,12 @@ sequenceDiagram
     participant S as Spring Boot
 
     Note over B: 阶段 1 · WS 流（下载 0~85%）
-    loop 每块
+    loop 每个 segment
         S-->>B: OGG 二进制
+        S-->>B: segment_complete
         B->>B: ffmpeg.wasm 解码 → AudioBuffer
-        B->>B: Web Audio 播放
-        B->>B: downloadProgress += chunk/total × 85%
+        B->>B: Web Audio 追加播放
+        B->>B: downloadProgress += chunk/total × 85%（chunk_complete 时更新）
     end
 
     Note over B: 阶段 2 · 完整文件（85~100%）
@@ -441,21 +442,19 @@ flowchart TD
 
 ### 8.2 单块处理流水线
 
-```mermaid
-flowchart LR
-    subgraph Spring["Spring ChunkPipelineScheduler"]
-        A[读取源 FLAC] --> B[FFmpeg decode\n24k mono s16]
-        B --> C[Python PCM 处理]
-        C --> D[FFmpeg encode\nOGG-FLAC 段]
-        D --> E[WS 推送二进制]
-        D --> F[落盘 chunk_N.ogg]
-    end
+编排层 **chunk**（10–90s）与 gRPC **segment**（10s）为两层粒度：每 chunk 一次 `ProcessStream` RPC，响应按 10s 流式返回；Spring 每收到一帧即 encode → WS 推送 → 落盘 `chunk_N_seg_M.ogg`，全部 segment 完成后 concat 为 `chunk_N.ogg`。
 
-    subgraph Python["Python"]
-        C --> G[gain + clip int16]
-        G --> H[24k → 48k resample]
-        H --> I[RTF sleep\nduration × 0.6]
-    end
+```mermaid
+flowchart TD
+    A[FFmpeg decode chunk → 24k mono s16] --> B[gRPC ProcessStream 一次 RPC]
+    B --> C{Python 每 10s yield}
+    C --> D[gain + 24k→48k]
+    D --> E[Spring: encode OGG 段]
+    E --> F[WS binary + segment_complete]
+    E --> G[落盘 chunk_N_seg_M.ogg]
+    C -->|全部 segment 发送完| H[Python: enforce_rtf 整次一次]
+    G --> I[FFmpeg concat segments]
+    I --> J[chunk_N.ogg + chunk_complete]
 ```
 
 ### 8.3 浏览器播放与 seek 决策
@@ -485,15 +484,17 @@ flowchart LR
     subgraph ServerTmp["${java.io.tmpdir}/ws-audio-demo"]
         UP["uploads/{uuid}.flac"]
         JOB["jobs/{jobId}/"]
-        CH["chunk_0.ogg ... chunk_N.ogg"]
+        SEG["chunk_N_seg_M.ogg（中间段）"]
+        CH["chunk_N.ogg（块合并）"]
         FULL["full.ogg"]
     end
 
     WAV -->|ffmpeg.wasm| FLAC_B
     FLAC_B -->|POST upload| UP
-    UP -->|流水线| CH
-    CH -->|concat| FULL
-    CH -->|WS| OGG_chunks
+    UP -->|流水线| SEG
+    SEG -->|concat per chunk| CH
+    CH -->|concat all chunks| FULL
+    SEG -->|WS 逐 segment| OGG_chunks
     FULL -->|GET download| OGG_full
 ```
 
@@ -507,9 +508,10 @@ flowchart LR
 |---------|------|------|
 | `session_meta` | S→B | totalChunks, sourceDurationSec |
 | `chunk_start` | S→B | chunkIndex, offsetSec, durationSec |
-| *(binary)* | S→B | 当前块 OGG-FLAC 数据 |
+| *(binary)* | S→B | 当前 **segment** 的 OGG-FLAC（32KB 切片） |
 | `progress` | S→B | bytesSentInChunk, chunkBytes |
-| `chunk_complete` | S→B | 块传输完成 |
+| `segment_complete` | S→B | segmentIndex, segmentDurationSec, isLastInChunk；**触发前端解码播放** |
+| `chunk_complete` | S→B | 块内 segment concat 完成 |
 | `complete` | S→B | downloadUrl, mergedBytes |
 | `error` | S→B | message |
 
@@ -547,9 +549,10 @@ Python **仅**对 PCM 处理阶段施加 RTF 0.6（墙钟 ≥ `durationSec × 0.
 
 | 指标 | 值 |
 |------|-----|
-| 分块 | [90, 90, 90, 11] → 4 块 |
-| estimatedProcessingSeconds | 281 × 0.6 ≈ **168.6s** |
-| 首块 chunk_complete（Python 部分约） | 90 × 0.6 ≈ **54s** |
+| 编排分块 | [90, 90, 90, 11] → 4 chunks |
+| gRPC segment 数 | 9+9+9+2 = **29**（每 chunk 内 10s 一帧） |
+| estimatedProcessingSeconds | 281 × 0.6 ≈ **168.6s**（整次 Python RTF，非首段） |
+| 首次可播 | 首个 `segment_complete`（约 10s 段编码 + 推送完成后，远早于首 chunk 的 54s RTF） |
 
 ---
 
@@ -558,7 +561,7 @@ Python **仅**对 PCM 处理阶段施加 RTF 0.6（墙钟 ≥ `durationSec × 0.
 | 层级 | 工具链 |
 |------|--------|
 | 前端 | pnpm, Vue 3, Vite, @ffmpeg/ffmpeg, npmmirror CDN |
-| 编排 | Java 17+, Gradle 9.5.1 (sdkman), Spring Boot 3.4, WebSocket, WebClient |
+| 编排 | Java 17+, Gradle 9.5.1 (sdkman), Spring Boot 3.4, WebSocket, gRPC (protobuf) |
 | PCM | uv, grpcio, numpy, scipy |
 | 系统 | **ffmpeg / ffprobe**（仅 Spring 调用） |
 
@@ -581,4 +584,5 @@ Python **仅**对 PCM 处理阶段施加 RTF 0.6（墙钟 ≥ `durationSec × 0.
 
 - [API 规格](./api-spec.md)
 - [测试计划](./test-plan.md)
+- [项目状态](./PROGRESS.md)
 - [README](../README.md)

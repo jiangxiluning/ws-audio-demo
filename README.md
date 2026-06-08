@@ -90,6 +90,7 @@ cd e2e && pnpm install && pnpm exec playwright install chromium && pnpm test
 - [架构设计（类图 / 时序图 / 部署图）](docs/architecture.md)
 - [API 规格](docs/api-spec.md)
 - [测试计划](docs/test-plan.md)
+- [项目状态](docs/PROGRESS.md)
 
 ## 目录
 
