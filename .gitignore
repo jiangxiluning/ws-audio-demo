@@ -1,0 +1,36 @@
+# 根目录
+.DS_Store
+*.log
+
+# Java / Gradle
+orchestrator/.gradle/
+orchestrator/build/
+orchestrator/bin/
+*.jar
+!orchestrator/gradle/wrapper/gradle-wrapper.jar
+
+# Python
+pcm-service/.venv/
+pcm-service/.pytest_cache/
+pcm-service/**/__pycache__/
+pcm-service/**/*.egg-info/
+pcm-service/.ruff_cache/
+
+# Node
+web/dist/
+web/node_modules/
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+
+# 运行时临时文件（Spring 上传/任务目录在系统 tmp）
+# ${java.io.tmpdir}/ws-audio-demo/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# 大文件（根目录副本忽略，测试素材见 test-fixtures/）
+/褪黑素.wav

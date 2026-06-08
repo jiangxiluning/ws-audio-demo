@@ -1,0 +1,28 @@
+[project]
+name = "pcm-service"
+version = "1.0.0"
+description = "PCM Service A - gain, resample, RTF (gRPC)"
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio>=1.68.0",
+    "grpcio-tools>=1.68.0",
+    "numpy>=2.1.0",
+    "scipy>=1.14.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3.0", "websocket-client>=1.8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

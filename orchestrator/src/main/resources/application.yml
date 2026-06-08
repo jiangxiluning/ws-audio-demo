@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: orchestrator
+  codec:
+    max-in-memory-size: 16MB
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+server:
+  port: 8080
+
+media:
+  storage-dir: ${java.io.tmpdir}/ws-audio-demo
+  min-duration-sec: 10
+  max-duration-sec: 300
+  max-chunk-sec: 90
+  min-chunk-sec: 10
+  ws-connect-timeout-sec: 30
+  pcm-grpc-target: localhost:8090
+  default-gain-db: 6.0
+  stream-chunk-bytes: 32768
